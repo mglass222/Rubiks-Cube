@@ -2,6 +2,8 @@
 
 A browser-based, fully playable 3×3×3 Rubik's Cube with classic colors, rounded stickers, and authentic twist sounds.
 
+**Live demo:** [mglass222.github.io/Rubiks-Cube](https://mglass222.github.io/Rubiks-Cube/)
+
 ## Features
 
 - **3D cube** — Three.js rendering with Western color scheme (white/yellow, red/orange, green/blue)
