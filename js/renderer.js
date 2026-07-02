@@ -111,8 +111,17 @@ export class CubeRenderer {
   }
 
   _buildCubies() {
+    // Dispose the per-sticker materials from the previous build before dropping
+    // the cubie tree. Shared geometries (_bodyGeo/_stickerGeo/_coreGeo) and the
+    // shared _blackMat are reused across rebuilds, so leave those intact.
     while (this.cubeGroup.children.length) {
-      this.cubeGroup.remove(this.cubeGroup.children[0]);
+      const child = this.cubeGroup.children[0];
+      child.traverse((obj) => {
+        if (obj.material && obj.material !== this._blackMat) {
+          obj.material.dispose();
+        }
+      });
+      this.cubeGroup.remove(child);
     }
     this.meshes = [];
 
@@ -152,10 +161,8 @@ export class CubeRenderer {
     ];
 
     const coreSize = GRID_PITCH * 3 - GAP * 0.15;
-    this._coreMesh = new THREE.Mesh(
-      new THREE.BoxGeometry(coreSize, coreSize, coreSize),
-      blackMat,
-    );
+    this._coreGeo ??= new THREE.BoxGeometry(coreSize, coreSize, coreSize);
+    this._coreMesh = new THREE.Mesh(this._coreGeo, blackMat);
     this.cubeGroup.add(this._coreMesh);
 
     for (let xi = 0; xi < 3; xi++) {
@@ -354,14 +361,18 @@ export class CubeRenderer {
 
   _onPointerDown(e) {
     if (this.animating) return;
+    // Capture the pointer so a release outside the canvas still reaches our
+    // pointerup handler and re-enables OrbitControls.
+    this.canvas.setPointerCapture?.(e.pointerId);
     const hit = this._pick(e);
     if (!hit) {
-      this.drag = { type: "orbit" };
+      this.drag = { type: "orbit", pointerId: e.pointerId };
       return;
     }
     this.controls.enabled = false;
     this.drag = {
       type: "face",
+      pointerId: e.pointerId,
       startX: e.clientX,
       startY: e.clientY,
       hit,
@@ -389,6 +400,9 @@ export class CubeRenderer {
   }
 
   _cancelDrag() {
+    if (this.drag && this.canvas.hasPointerCapture?.(this.drag.pointerId)) {
+      this.canvas.releasePointerCapture(this.drag.pointerId);
+    }
     this.drag = null;
     this.controls.enabled = true;
   }

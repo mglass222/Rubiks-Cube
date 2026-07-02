@@ -100,7 +100,7 @@ async function runAlgorithm(moves, { record = true, scramble = false } = {}) {
   for (const move of moves) {
     await renderer.animateMove(move, { sound: audio });
     if (record) state.moveHistory.push(move);
-    if (!scramble) {
+    if (record && !scramble) {
       sessionMoves++;
       updateMoveCount();
       startTimer();
@@ -173,32 +173,66 @@ const keyMap = {
 };
 
 let pendingFace = null;
+let pendingTimer = null;
+
+// A bare face key is held briefly so a following "2" can combine into a double
+// turn (e.g. R then 2 -> R2). If nothing follows, the plain face turn fires.
+function flushPendingFace() {
+  if (pendingTimer) {
+    clearTimeout(pendingTimer);
+    pendingTimer = null;
+  }
+  if (pendingFace) {
+    const face = pendingFace;
+    pendingFace = null;
+    performMove(face);
+  }
+}
 
 document.addEventListener("keydown", (e) => {
   if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
 
   if (e.code === "Space") {
     e.preventDefault();
+    flushPendingFace();
     scramble();
     return;
   }
 
   const key = e.key.toLowerCase();
+
   if (key === "2" && pendingFace) {
     e.preventDefault();
-    performMove(`${pendingFace}2`);
+    const face = pendingFace;
     pendingFace = null;
+    if (pendingTimer) {
+      clearTimeout(pendingTimer);
+      pendingTimer = null;
+    }
+    performMove(`${face}2`);
     return;
   }
 
-  if (!(key in keyMap)) return;
+  if (!(key in keyMap)) {
+    flushPendingFace();
+    return;
+  }
   e.preventDefault();
 
-  let move = keyMap[key];
-  if (e.shiftKey) move += "'";
-  else pendingFace = keyMap[key];
+  // A new face key supersedes any pending one.
+  flushPendingFace();
 
-  performMove(move);
+  if (e.shiftKey) {
+    performMove(`${keyMap[key]}'`);
+  } else {
+    pendingFace = keyMap[key];
+    pendingTimer = setTimeout(() => {
+      pendingTimer = null;
+      const face = pendingFace;
+      pendingFace = null;
+      if (face) performMove(face);
+    }, 250);
+  }
 });
 
 // Quick self-test in console
@@ -207,9 +241,8 @@ if (typeof window !== "undefined") {
     const test = new CubeState();
     const moves = randomScramble(30);
     for (const m of moves) test.applyMove(m);
-    const solved = solveFromHistory(moves);
-    const verify = new CubeState();
-    for (const m of solved) verify.applyMove(m);
-    return verify.isSolved();
+    const solved = solveFromHistory(test.moveHistory);
+    for (const m of solved) test.applyMove(m);
+    return test.isSolved();
   };
 }
