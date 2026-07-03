@@ -64,6 +64,8 @@ export class CubeRenderer {
 
     /** @type {THREE.Mesh[][][]} */
     this.meshes = [];
+    /** @type {THREE.Mesh[]} colored sticker meshes for raycasting */
+    this._pickables = [];
     this._buildCubies();
     this._resize();
     window.addEventListener("resize", () => this._resize());
@@ -124,6 +126,7 @@ export class CubeRenderer {
       this.cubeGroup.remove(child);
     }
     this.meshes = [];
+    this._pickables = [];
 
     const blackMat = this._blackMat ?? new THREE.MeshStandardMaterial({
       color: BLACK,
@@ -209,6 +212,9 @@ export class CubeRenderer {
             sticker.receiveShadow = true;
             sticker.userData.stickerFace = f.key;
             group.add(sticker);
+            if (colorId !== null) {
+              this._pickables.push(sticker);
+            }
           }
 
           this.cubeGroup.add(group);
@@ -321,28 +327,35 @@ export class CubeRenderer {
           pivot.rotation[axis] = angle;
           pivot.updateMatrixWorld(true);
 
-          for (const a of affected) {
-            const mesh = a.mesh;
-            pivot.remove(mesh);
-            this.cubeGroup.add(mesh);
-
+          const placements = affected.map((a) => {
             const [nx, ny, nz] = rotateCoords(a.x, a.y, a.z, face, turns);
-            const nxi = nx + 1;
-            const nyi = ny + 1;
-            const nzi = nz + 1;
+            return {
+              mesh: a.mesh,
+              from: { xi: a.xi, yi: a.yi, zi: a.zi },
+              to: { xi: nx + 1, yi: ny + 1, zi: nz + 1, x: nx, y: ny, z: nz },
+            };
+          });
 
-            if (this.meshes[a.xi][a.yi][a.zi] === mesh) {
-              this.meshes[a.xi][a.yi][a.zi] = null;
+          for (const p of placements) {
+            const { xi, yi, zi } = p.from;
+            if (this.meshes[xi][yi][zi] === p.mesh) {
+              this.meshes[xi][yi][zi] = null;
             }
-            this.meshes[nxi][nyi][nzi] = mesh;
-            mesh.userData = { xi: nxi, yi: nyi, zi: nzi, x: nx, y: ny, z: nz };
-            mesh.position.set(
-              nx * GRID_PITCH,
-              ny * GRID_PITCH,
-              nz * GRID_PITCH,
+            pivot.remove(p.mesh);
+            this.cubeGroup.add(p.mesh);
+          }
+
+          for (const p of placements) {
+            const { xi, yi, zi, x, y, z } = p.to;
+            this.meshes[xi][yi][zi] = p.mesh;
+            p.mesh.userData = { xi, yi, zi, x, y, z };
+            p.mesh.position.set(
+              x * GRID_PITCH,
+              y * GRID_PITCH,
+              z * GRID_PITCH,
             );
-            mesh.rotation.set(0, 0, 0);
-            mesh.updateMatrix();
+            p.mesh.rotation.set(0, 0, 0);
+            p.mesh.updateMatrix();
           }
 
           this.cubeGroup.remove(pivot);
@@ -361,14 +374,13 @@ export class CubeRenderer {
 
   _onPointerDown(e) {
     if (this.animating) return;
-    // Capture the pointer so a release outside the canvas still reaches our
-    // pointerup handler and re-enables OrbitControls.
     this.canvas.setPointerCapture?.(e.pointerId);
     const hit = this._pick(e);
     if (!hit) {
       this.drag = { type: "orbit", pointerId: e.pointerId };
       return;
     }
+    e.preventDefault();
     this.controls.enabled = false;
     this.drag = {
       type: "face",
@@ -381,6 +393,7 @@ export class CubeRenderer {
 
   _onPointerMove(e) {
     if (!this.drag || this.drag.type !== "face") return;
+    e.preventDefault();
   }
 
   _onPointerUp(e) {
@@ -389,7 +402,7 @@ export class CubeRenderer {
       const dx = e.clientX - this.drag.startX;
       const dy = e.clientY - this.drag.startY;
       const dist = Math.hypot(dx, dy);
-      if (dist > 12) {
+      if (dist > 8) {
         const move = this._dragToMove(this.drag.hit, dx, dy);
         if (move && this.onFaceDrag) {
           this.onFaceDrag(move);
@@ -413,80 +426,94 @@ export class CubeRenderer {
     this.pointer.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
     this.raycaster.setFromCamera(this.pointer, this.camera);
 
-    const objects = [];
-    this.cubeGroup.traverse((o) => {
-      if (o.isMesh) objects.push(o);
-    });
-    const hits = this.raycaster.intersectObjects(objects, false);
+    const hits = this.raycaster.intersectObjects(this._pickables, false);
     if (!hits.length) return null;
 
     const mesh = hits[0].object;
     const group = mesh.parent;
-    const normal = hits[0].face.normal.clone();
-    mesh.localToWorld(normal);
-    group.worldToLocal(normal);
-    normal.round();
+    if (!group?.userData || group.userData.xi === undefined) return null;
 
-    let faceKey = null;
-    if (normal.x > 0.5) faceKey = "px";
-    else if (normal.x < -0.5) faceKey = "nx";
-    else if (normal.y > 0.5) faceKey = "py";
-    else if (normal.y < -0.5) faceKey = "ny";
-    else if (normal.z > 0.5) faceKey = "pz";
-    else if (normal.z < -0.5) faceKey = "nz";
+    const faceKey = mesh.userData.stickerFace;
+    if (!faceKey) return null;
 
     return { group, faceKey, ...group.userData };
   }
 
   _dragToMove(hit, dx, dy) {
-    const { faceKey, x, y, z } = hit;
-    const ax = Math.abs(dx);
-    const ay = Math.abs(dy);
-    const horiz = ax > ay;
-
-    const map = {
-      py: horiz ? (dx > 0 ? "U" : "U'") : (dy < 0 ? "U" : "U'"),
-      ny: horiz ? (dx > 0 ? "D'" : "D") : (dy > 0 ? "D'" : "D"),
-      px: horiz ? (dx > 0 ? "R'" : "R") : (dy < 0 ? "R'" : "R"),
-      nx: horiz ? (dx > 0 ? "L" : "L'") : (dy > 0 ? "L" : "L'"),
-      pz: horiz ? (dx > 0 ? "F" : "F'") : (dy < 0 ? "F" : "F'"),
-      nz: horiz ? (dx > 0 ? "B'" : "B") : (dy > 0 ? "B'" : "B"),
-    };
-
-    let move = map[faceKey];
-    if (!move) return null;
-
-    // Pick layer move based on cubie position
-    if (faceKey === "py" || faceKey === "ny") {
-      // U/D already correct
-    } else if (faceKey === "px" || faceKey === "nx") {
-      if (y === 1) move = move.replace(/[RL]/, faceKey === "px" ? "U" : "U'");
-      else if (y === -1) move = move.replace(/[RL]/, faceKey === "px" ? "D'" : "D");
-      else if (z === 1) move = faceKey === "px" ? (horiz ? (dx > 0 ? "F'" : "F") : "F") : (horiz ? (dx > 0 ? "F'" : "F") : "F");
-      else if (z === -1) move = faceKey === "px" ? "B" : "B'";
-      else move = faceKey === "px" ? "R" : "L";
-      if (y === 1) move = horiz ? (dx > 0 ? "U" : "U'") : (dy < 0 ? "U" : "U'");
-      if (y === -1) move = horiz ? (dx > 0 ? "D'" : "D") : (dy > 0 ? "D'" : "D");
-      if (z === 1 && y === 0) move = horiz ? (dx > 0 ? "F'" : "F") : (dy < 0 ? "F" : "F'");
-      if (z === -1 && y === 0) move = horiz ? (dx > 0 ? "B" : "B'") : (dy > 0 ? "B'" : "B");
-      if (x === 1) move = horiz ? (dx > 0 ? "R'" : "R") : (dy < 0 ? "R'" : "R");
-      if (x === -1) move = horiz ? (dx > 0 ? "L" : "L'") : (dy > 0 ? "L" : "L'");
-    }
-
-    return this._resolveLayerMove(hit, dx, dy, horiz);
+    return this._resolveLayerMove(hit, dx, dy);
   }
 
-  _resolveLayerMove(hit, dx, dy, horiz) {
-    const { faceKey, x, y, z } = hit;
+  _resolveLayerMove(hit, dx, dy) {
+    const faceMoves = {
+      py: "U", ny: "D", pz: "F", nz: "B", px: "R", nx: "L",
+    };
+    const face = faceMoves[hit.faceKey];
+    if (!face) return null;
+    return this._dragClockwise(hit, dx, dy) ? face : `${face}'`;
+  }
 
-    if (faceKey === "py") return horiz ? (dx > 0 ? "U" : "U'") : (dy < 0 ? "U" : "U'");
-    if (faceKey === "ny") return horiz ? (dx > 0 ? "D'" : "D") : (dy > 0 ? "D'" : "D");
-    if (faceKey === "pz") return horiz ? (dx > 0 ? "F" : "F'") : (dy < 0 ? "F" : "F'");
-    if (faceKey === "nz") return horiz ? (dx > 0 ? "B'" : "B") : (dy > 0 ? "B'" : "B");
-    if (faceKey === "px") return horiz ? (dx > 0 ? "R'" : "R") : (dy < 0 ? "R'" : "R");
-    if (faceKey === "nx") return horiz ? (dx > 0 ? "L" : "L'") : (dy > 0 ? "L" : "L'");
+  /** True when drag follows clockwise rotation of that face (viewed from outside). */
+  _dragClockwise(hit, dx, dy) {
+    const axisNormals = {
+      px: new THREE.Vector3(1, 0, 0),
+      nx: new THREE.Vector3(-1, 0, 0),
+      py: new THREE.Vector3(0, 1, 0),
+      ny: new THREE.Vector3(0, -1, 0),
+      pz: new THREE.Vector3(0, 0, 1),
+      nz: new THREE.Vector3(0, 0, -1),
+    };
+    // Tangent basis on each face; u × v = outward normal.
+    const faceTangents = {
+      py: {
+        u: new THREE.Vector3(0, 0, 1),
+        v: new THREE.Vector3(1, 0, 0),
+      },
+      ny: {
+        u: new THREE.Vector3(0, 0, 1),
+        v: new THREE.Vector3(-1, 0, 0),
+      },
+      px: {
+        u: new THREE.Vector3(0, 0, -1),
+        v: new THREE.Vector3(0, 1, 0),
+      },
+      nx: {
+        u: new THREE.Vector3(0, 0, 1),
+        v: new THREE.Vector3(0, 1, 0),
+      },
+      pz: {
+        u: new THREE.Vector3(0, 1, 0),
+        v: new THREE.Vector3(-1, 0, 0),
+      },
+      nz: {
+        u: new THREE.Vector3(0, 1, 0),
+        v: new THREE.Vector3(1, 0, 0),
+      },
+    };
 
-    return null;
+    const normal = axisNormals[hit.faceKey];
+    const tangents = faceTangents[hit.faceKey];
+    if (!normal || !tangents) return true;
+
+    const right = new THREE.Vector3();
+    const camUp = new THREE.Vector3();
+    this.camera.matrixWorld.extractBasis(right, camUp, new THREE.Vector3());
+    const drag = right.multiplyScalar(dx).add(camUp.multiplyScalar(-dy));
+
+    const { u, v } = tangents;
+    const tangential = u
+      .clone()
+      .multiplyScalar(drag.dot(u))
+      .add(v.clone().multiplyScalar(drag.dot(v)));
+
+    if (tangential.lengthSq() < 1e-4) {
+      return Math.abs(dx) > Math.abs(dy) ? dx > 0 : -dy > 0;
+    }
+
+    const worldPos = new THREE.Vector3();
+    hit.group.getWorldPosition(worldPos);
+    const toCamera = this.camera.position.clone().sub(worldPos).normalize();
+
+    return new THREE.Vector3().crossVectors(normal, tangential).dot(toCamera) > 0;
   }
 }
 
