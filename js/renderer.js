@@ -22,6 +22,58 @@ const ROUND_SEGMENTS = 6;
 const ANIM_MS = 160;
 const BLACK = 0x080808;
 
+/** Outward unit normal per clickable sticker face key. */
+const FACE_NORMALS = {
+  px: new THREE.Vector3(1, 0, 0),
+  nx: new THREE.Vector3(-1, 0, 0),
+  py: new THREE.Vector3(0, 1, 0),
+  ny: new THREE.Vector3(0, -1, 0),
+  pz: new THREE.Vector3(0, 0, 1),
+  nz: new THREE.Vector3(0, 0, -1),
+};
+
+/**
+ * For each face, the two world axes that lie in the face plane (perpendicular
+ * to the face normal). A drag projected onto one of these picks the rotation
+ * axis via normal x dragAxis.
+ */
+const IN_FACE_AXES = {
+  px: [
+    { vec: new THREE.Vector3(0, 1, 0), axis: "y" },
+    { vec: new THREE.Vector3(0, 0, 1), axis: "z" },
+  ],
+  nx: [
+    { vec: new THREE.Vector3(0, 1, 0), axis: "y" },
+    { vec: new THREE.Vector3(0, 0, 1), axis: "z" },
+  ],
+  py: [
+    { vec: new THREE.Vector3(1, 0, 0), axis: "x" },
+    { vec: new THREE.Vector3(0, 0, 1), axis: "z" },
+  ],
+  ny: [
+    { vec: new THREE.Vector3(1, 0, 0), axis: "x" },
+    { vec: new THREE.Vector3(0, 0, 1), axis: "z" },
+  ],
+  pz: [
+    { vec: new THREE.Vector3(1, 0, 0), axis: "x" },
+    { vec: new THREE.Vector3(0, 1, 0), axis: "y" },
+  ],
+  nz: [
+    { vec: new THREE.Vector3(1, 0, 0), axis: "x" },
+    { vec: new THREE.Vector3(0, 1, 0), axis: "y" },
+  ],
+};
+
+/**
+ * Map a rotation axis + cubie coordinate to the face letter of that layer.
+ * Coordinate 0 is a middle slice (M/E/S) → null (unsupported, drag does nothing).
+ */
+const AXIS_LAYER_FACE = {
+  x: { [-1]: "L", 0: null, 1: "R" },
+  y: { [-1]: "D", 0: null, 1: "U" },
+  z: { [-1]: "B", 0: null, 1: "F" },
+};
+
 
 export class CubeRenderer {
   /**
@@ -460,93 +512,70 @@ export class CubeRenderer {
     return { group, faceKey, ...group.userData };
   }
 
+  /**
+   * Resolve a drag on a sticker into a cube move.
+   *
+   * A drag turns the layer that is perpendicular to the drag direction (not the
+   * face the sticker sits on): the drag direction, projected onto the clicked
+   * face, picks a rotation axis; the clicked cubie's coordinate along that axis
+   * selects which layer (U/D, L/R, or F/B). Middle-slice drags resolve to no
+   * move. The turn sign is derived from the same convention as moveToAngle in
+   * cube.js, so the dragged layer and the animated layer always agree.
+   */
   _dragToMove(hit, dx, dy) {
-    return this._resolveLayerMove(hit, dx, dy);
-  }
+    const normal = FACE_NORMALS[hit.faceKey];
+    if (!normal) return null;
 
-  _resolveLayerMove(hit, dx, dy) {
-    const faceMoves = {
-      py: "U", ny: "D", pz: "F", nz: "B", px: "R", nx: "L",
-    };
-    const face = faceMoves[hit.faceKey];
-    if (!face) return null;
-    return this._dragClockwise(hit, dx, dy) ? face : `${face}'`;
-  }
-
-  /** True when drag follows clockwise rotation of that face (viewed from outside). */
-  _dragClockwise(hit, dx, dy) {
-    const axisNormals = {
-      px: new THREE.Vector3(1, 0, 0),
-      nx: new THREE.Vector3(-1, 0, 0),
-      py: new THREE.Vector3(0, 1, 0),
-      ny: new THREE.Vector3(0, -1, 0),
-      pz: new THREE.Vector3(0, 0, 1),
-      nz: new THREE.Vector3(0, 0, -1),
-    };
-    // Tangent basis on each face; u × v = outward normal.
-    const faceTangents = {
-      py: {
-        u: new THREE.Vector3(0, 0, 1),
-        v: new THREE.Vector3(1, 0, 0),
-      },
-      ny: {
-        u: new THREE.Vector3(0, 0, 1),
-        v: new THREE.Vector3(-1, 0, 0),
-      },
-      px: {
-        u: new THREE.Vector3(0, 0, -1),
-        v: new THREE.Vector3(0, 1, 0),
-      },
-      nx: {
-        u: new THREE.Vector3(0, 0, 1),
-        v: new THREE.Vector3(0, 1, 0),
-      },
-      pz: {
-        u: new THREE.Vector3(0, 1, 0),
-        v: new THREE.Vector3(-1, 0, 0),
-      },
-      nz: {
-        u: new THREE.Vector3(0, 1, 0),
-        v: new THREE.Vector3(1, 0, 0),
-      },
-    };
-
-    const normal = axisNormals[hit.faceKey];
-    const tangents = faceTangents[hit.faceKey];
-    if (!normal || !tangents) return true;
-
+    // World-space drag vector: +dx toward camera right, +dy (screen down) toward
+    // camera down, i.e. camera up * -dy.
     const right = new THREE.Vector3();
     const camUp = new THREE.Vector3();
     this.camera.matrixWorld.extractBasis(right, camUp, new THREE.Vector3());
     const drag = right.multiplyScalar(dx).add(camUp.multiplyScalar(-dy));
 
-    const { u, v } = tangents;
-    const tangential = u
-      .clone()
-      .multiplyScalar(drag.dot(u))
-      .add(v.clone().multiplyScalar(drag.dot(v)));
+    // Pick the in-face axis the drag is most aligned with.
+    let bestAxis = null;
+    let bestMag = 0;
+    let bestSign = 1;
+    for (const ax of IN_FACE_AXES[hit.faceKey]) {
+      const mag = drag.dot(ax.vec);
+      if (Math.abs(mag) > bestMag) {
+        bestMag = Math.abs(mag);
+        bestAxis = ax;
+        bestSign = Math.sign(mag) || 1;
+      }
+    }
+    if (!bestAxis || bestMag < 1e-4) return null;
 
-    if (tangential.lengthSq() < 1e-4) {
-      return Math.abs(dx) > Math.abs(dy) ? dx > 0 : -dy > 0;
+    // The rotation axis is normal × dragAxis, scaled by the drag sense so its
+    // sign carries the physical turn direction about that axis.
+    const rotAxis = new THREE.Vector3()
+      .crossVectors(normal, bestAxis.vec)
+      .multiplyScalar(bestSign);
+
+    // Select the layer from the clicked cubie's coordinate along rotAxis.
+    let coord;
+    let axisName;
+    if (Math.abs(rotAxis.x) > 0.5) {
+      axisName = "x";
+      coord = hit.x;
+    } else if (Math.abs(rotAxis.y) > 0.5) {
+      axisName = "y";
+      coord = hit.y;
+    } else {
+      axisName = "z";
+      coord = hit.z;
     }
 
-    const faceCenter = this._faceCenterWorld(hit.faceKey);
-    const toViewer = this.camera.position.clone().sub(faceCenter).normalize();
+    const face = AXIS_LAYER_FACE[axisName][coord];
+    if (!face) return null; // middle slice (M/E/S) — unsupported, do nothing
 
-    return new THREE.Vector3().crossVectors(normal, tangential).dot(toViewer) > 0;
-  }
-
-  _faceCenterWorld(faceKey) {
-    const faceNormals = {
-      px: new THREE.Vector3(1, 0, 0),
-      nx: new THREE.Vector3(-1, 0, 0),
-      py: new THREE.Vector3(0, 1, 0),
-      ny: new THREE.Vector3(0, -1, 0),
-      pz: new THREE.Vector3(0, 0, 1),
-      nz: new THREE.Vector3(0, 0, -1),
-    };
-    const local = faceNormals[faceKey].clone().multiplyScalar(GRID_PITCH);
-    return this.cubeGroup.localToWorld(local);
+    // Compare the drag's physical turn direction about the layer axis against the
+    // engine's positive-turn direction (moveToAngle: angle = -pi/2 * dir).
+    const dragDir = Math.sign(rotAxis[axisName]) || 1;
+    const engineDir = -faceAxis(face).dir;
+    const prime = dragDir !== engineDir;
+    return prime ? `${face}'` : face;
   }
 }
 
