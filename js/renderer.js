@@ -235,6 +235,27 @@ export class CubeRenderer {
         }
       }
     }
+    this._refreshPickables();
+  }
+
+  _refreshPickables() {
+    this._pickables = [];
+    for (let xi = 0; xi < 3; xi++) {
+      for (let yi = 0; yi < 3; yi++) {
+        for (let zi = 0; zi < 3; zi++) {
+          const group = this.meshes[xi][yi][zi];
+          const data = this.state.cubies[xi][yi][zi];
+          if (!group || !data) continue;
+          for (const child of group.children) {
+            const faceKey = child.userData.stickerFace;
+            if (!faceKey) continue;
+            if (data.stickers[faceKey] !== null) {
+              this._pickables.push(child);
+            }
+          }
+        }
+      }
+    }
   }
 
   rebuild() {
@@ -509,11 +530,23 @@ export class CubeRenderer {
       return Math.abs(dx) > Math.abs(dy) ? dx > 0 : -dy > 0;
     }
 
-    const worldPos = new THREE.Vector3();
-    hit.group.getWorldPosition(worldPos);
-    const toCamera = this.camera.position.clone().sub(worldPos).normalize();
+    const faceCenter = this._faceCenterWorld(hit.faceKey);
+    const toViewer = this.camera.position.clone().sub(faceCenter).normalize();
 
-    return new THREE.Vector3().crossVectors(normal, tangential).dot(toCamera) > 0;
+    return new THREE.Vector3().crossVectors(normal, tangential).dot(toViewer) > 0;
+  }
+
+  _faceCenterWorld(faceKey) {
+    const faceNormals = {
+      px: new THREE.Vector3(1, 0, 0),
+      nx: new THREE.Vector3(-1, 0, 0),
+      py: new THREE.Vector3(0, 1, 0),
+      ny: new THREE.Vector3(0, -1, 0),
+      pz: new THREE.Vector3(0, 0, 1),
+      nz: new THREE.Vector3(0, 0, -1),
+    };
+    const local = faceNormals[faceKey].clone().multiplyScalar(GRID_PITCH);
+    return this.cubeGroup.localToWorld(local);
   }
 }
 
