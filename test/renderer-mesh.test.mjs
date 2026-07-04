@@ -1,35 +1,7 @@
 /**
  * Simulates mesh grid updates from renderer._animateSingleTurn to catch swap bugs.
  */
-import { CubeState, getLayerCubies, randomScramble } from "../js/cube.js";
-
-function rotateCoords(x, y, z, face, turns) {
-  if (turns === 2) {
-    switch (face) {
-      case "U":
-      case "D":
-        return [-x, y, -z];
-      case "R":
-      case "L":
-        return [x, -y, -z];
-      case "F":
-      case "B":
-        return [-x, -y, z];
-      default:
-        return [x, y, z];
-    }
-  }
-  const s = turns === 3 ? -1 : 1;
-  switch (face) {
-    case "U": return [s * z, y, -s * x];
-    case "D": return [-s * z, y, s * x];
-    case "R": return [x, -s * z, s * y];
-    case "L": return [x, s * z, -s * y];
-    case "F": return [s * y, -s * x, z];
-    case "B": return [-s * y, s * x, z];
-    default: return [x, y, z];
-  }
-}
+import { CubeState, getLayerCubies, randomScramble, rotateCoords } from "../js/cube.js";
 
 function parseMove(move) {
   const m = move.trim().match(/^([URFDLB])(['2]?|2)$/i);
@@ -138,3 +110,101 @@ for (let xi = 0; xi < 3; xi++) {
 }
 
 console.log("✓ mesh grid stays consistent through", moves.length, "random moves");
+
+// Single-move consistency: verify the mesh grid (using the shared rotateCoords
+// from cube.js, mirroring _animateSingleTurn) matches CubeState for every
+// individual face/turn combination, not just after a long scramble.
+for (const face of ["U", "D", "L", "R", "F", "B"]) {
+  for (const suffix of ["", "'", "2"]) {
+    const move = `${face}${suffix}`;
+    const parsed = parseMove(move);
+    const meshes = buildMeshGrid();
+    const before = [];
+    for (let xi = 0; xi < 3; xi++) {
+      for (let yi = 0; yi < 3; yi++) {
+        for (let zi = 0; zi < 3; zi++) {
+          const mesh = meshes[xi][yi][zi];
+          if (mesh) before.push({ id: mesh.id, xi, yi, zi });
+        }
+      }
+    }
+
+    simulateTurn(meshes, parsed.face, parsed.turns);
+    const state = new CubeState();
+    state.applyMove(move);
+
+    if (!meshGridMatchesState(meshes, state)) {
+      console.error(`Mesh grid desync after single move ${move}`);
+      process.exit(1);
+    }
+
+    // Cubies outside the turned layer must stay in their original slot.
+    const layerSlots = new Set(
+      getLayerCubies(face).map((p) => `${p.xi},${p.yi},${p.zi}`),
+    );
+    for (const b of before) {
+      const key = `${b.xi},${b.yi},${b.zi}`;
+      if (layerSlots.has(key)) continue;
+      const current = meshes[b.xi][b.yi][b.zi];
+      if (!current || current.id !== b.id) {
+        console.error(`Cubie outside the ${face} layer moved unexpectedly for move ${move}`);
+        process.exit(1);
+      }
+    }
+  }
+}
+console.log("✓ single-move mesh grid updates stay consistent for every face and turn");
+
+// Four quarter turns of any face must return every mesh to its original slot.
+for (const face of ["U", "D", "L", "R", "F", "B"]) {
+  const meshes = buildMeshGrid();
+  const originalLayout = [];
+  for (let xi = 0; xi < 3; xi++) {
+    for (let yi = 0; yi < 3; yi++) {
+      for (let zi = 0; zi < 3; zi++) {
+        originalLayout.push(meshes[xi][yi][zi]?.id ?? null);
+      }
+    }
+  }
+
+  for (let i = 0; i < 4; i++) simulateTurn(meshes, face, 1);
+
+  const finalLayout = [];
+  for (let xi = 0; xi < 3; xi++) {
+    for (let yi = 0; yi < 3; yi++) {
+      for (let zi = 0; zi < 3; zi++) {
+        finalLayout.push(meshes[xi][yi][zi]?.id ?? null);
+      }
+    }
+  }
+
+  if (originalLayout.join(",") !== finalLayout.join(",")) {
+    console.error(`Four ${face} quarter turns did not return the mesh grid to its original layout`);
+    process.exit(1);
+  }
+}
+console.log("✓ four quarter turns return the mesh grid to its original layout for every face");
+
+// A double turn (turns=2) must equal applying the same quarter turn twice.
+for (const face of ["U", "D", "L", "R", "F", "B"]) {
+  const meshesDouble = buildMeshGrid();
+  simulateTurn(meshesDouble, face, 2);
+
+  const meshesTwice = buildMeshGrid();
+  simulateTurn(meshesTwice, face, 1);
+  simulateTurn(meshesTwice, face, 1);
+
+  for (let xi = 0; xi < 3; xi++) {
+    for (let yi = 0; yi < 3; yi++) {
+      for (let zi = 0; zi < 3; zi++) {
+        const a = meshesDouble[xi][yi][zi];
+        const b = meshesTwice[xi][yi][zi];
+        if ((a?.id ?? null) !== (b?.id ?? null)) {
+          console.error(`${face}2 does not equal two ${face} turns at slot (${xi},${yi},${zi})`);
+          process.exit(1);
+        }
+      }
+    }
+  }
+}
+console.log("✓ double turns match two quarter turns for every face");
