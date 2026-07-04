@@ -19,6 +19,18 @@ export const COLOR_HEX = {
 
 const FACE_CHARS = ["U", "R", "F", "D", "L", "B"];
 const FACE_COLOR = [COLORS.W, COLORS.G, COLORS.R, COLORS.Y, COLORS.B, COLORS.O];
+const STICKER_KEYS = ["px", "nx", "py", "ny", "pz", "nz"];
+const STICKER_VECTORS = {
+  px: [1, 0, 0],
+  nx: [-1, 0, 0],
+  py: [0, 1, 0],
+  ny: [0, -1, 0],
+  pz: [0, 0, 1],
+  nz: [0, 0, -1],
+};
+const VECTOR_STICKERS = Object.fromEntries(
+  Object.entries(STICKER_VECTORS).map(([key, vec]) => [vec.join(","), key]),
+);
 
 const MOVE_PERM = buildMoveTablesFrom3D();
 
@@ -129,65 +141,39 @@ function rotateLayer(grid, face, turns) {
   }
 }
 
-function rotateCoords(x, y, z, face, turns) {
-  if (turns === 2) {
-    switch (face) {
-      case "U":
-      case "D":
-        return [-x, y, -z];
-      case "R":
-      case "L":
-        return [x, -y, -z];
-      case "F":
-      case "B":
-        return [-x, -y, z];
-      default:
-        return [x, y, z];
-    }
-  }
-  const s = turns === 3 ? -1 : 1;
-  switch (face) {
-    case "U": return [s * z, y, -s * x];
-    case "D": return [-s * z, y, s * x];
-    case "R": return [x, -s * z, s * y];
-    case "L": return [x, s * z, -s * y];
-    case "F": return [s * y, -s * x, z];
-    case "B": return [-s * y, s * x, z];
-    default: return [x, y, z];
-  }
+export function rotateCoords(x, y, z, face, turns) {
+  return rotateVectorQuarter([x, y, z], face, turns);
 }
 
 function rotateStickers(st, face, turns) {
-  const c = { ...st };
-  const rotY = (d) => {
-    const { px, nx, py, ny, pz, nz } = c;
-    if (d === 1) c.px = pz, c.pz = nx, c.nx = nz, c.nz = px, c.py = py, c.ny = ny;
-    else c.px = nz, c.pz = px, c.nx = pz, c.nz = nx, c.py = py, c.ny = ny;
+  const out = {
+    px: null,
+    nx: null,
+    py: null,
+    ny: null,
+    pz: null,
+    nz: null,
   };
-  const rotX = (d) => {
-    const { px, nx, py, ny, pz, nz } = c;
-    if (d === 1) {
-      c.py = pz; c.pz = ny; c.ny = nz; c.nz = py; c.px = px; c.nx = nx;
-    } else {
-      c.py = nz; c.pz = py; c.ny = pz; c.nz = ny; c.px = px; c.nx = nx;
-    }
-  };
-  const rotZ = (d) => {
-    const { px, nx, py, ny, pz, nz } = c;
-    if (d === 1) {
-      c.py = px; c.px = ny; c.ny = nx; c.nx = py; c.pz = pz; c.nz = nz;
-    } else {
-      c.py = nx; c.px = py; c.ny = px; c.nx = ny; c.pz = pz; c.nz = nz;
-    }
-  };
-  const s = turns === 3 ? -1 : 1;
-  if (face === "U") rotY(s);
-  else if (face === "D") rotY(-s);
-  else if (face === "R") rotX(s);
-  else if (face === "L") rotX(-s);
-  else if (face === "F") rotZ(s);
-  else if (face === "B") rotZ(-s);
-  return c;
+
+  for (const key of STICKER_KEYS) {
+    const color = st[key];
+    if (color === null) continue;
+    const nextKey = VECTOR_STICKERS[
+      rotateVectorQuarter(STICKER_VECTORS[key], face, turns).join(",")
+    ];
+    out[nextKey] = color;
+  }
+  return out;
+}
+
+function rotateVectorQuarter([x, y, z], face, turns) {
+  const { axis, angle } = moveToAngle(face, turns);
+  const sin = Math.round(Math.sin(angle));
+  const cos = Math.round(Math.cos(angle));
+
+  if (axis === "x") return [x, cos * y - sin * z, sin * y + cos * z];
+  if (axis === "y") return [cos * x + sin * z, y, -sin * x + cos * z];
+  return [cos * x - sin * y, sin * x + cos * y, z];
 }
 
 function solvedFacelets() {

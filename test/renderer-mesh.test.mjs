@@ -1,35 +1,7 @@
 /**
  * Simulates mesh grid updates from renderer._animateSingleTurn to catch swap bugs.
  */
-import { CubeState, getLayerCubies, randomScramble } from "../js/cube.js";
-
-function rotateCoords(x, y, z, face, turns) {
-  if (turns === 2) {
-    switch (face) {
-      case "U":
-      case "D":
-        return [-x, y, -z];
-      case "R":
-      case "L":
-        return [x, -y, -z];
-      case "F":
-      case "B":
-        return [-x, -y, z];
-      default:
-        return [x, y, z];
-    }
-  }
-  const s = turns === 3 ? -1 : 1;
-  switch (face) {
-    case "U": return [s * z, y, -s * x];
-    case "D": return [-s * z, y, s * x];
-    case "R": return [x, -s * z, s * y];
-    case "L": return [x, s * z, -s * y];
-    case "F": return [s * y, -s * x, z];
-    case "B": return [-s * y, s * x, z];
-    default: return [x, y, z];
-  }
-}
+import { CubeState, getLayerCubies, randomScramble, rotateCoords } from "../js/cube.js";
 
 function parseMove(move) {
   const m = move.trim().match(/^([URFDLB])(['2]?|2)$/i);
